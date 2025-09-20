@@ -1,3 +1,6 @@
+#include "../include/ThreadPool.h"
+    // 创建线程池，假设4个worker线程
+    ThreadPool pool(4);
 
 #include <iostream>
 #include <sys/socket.h>
@@ -72,28 +75,29 @@ int main() {
                     std::cout << "New connection accepted, fd=" << client_fd << std::endl;
                 }
             } else if (events[i].events & EPOLLIN) {
-                // 处理数据读入
                 int client_fd = events[i].data.fd;
-                char buf[4096];
-                while (true) {
-                    ssize_t n = read(client_fd, buf, sizeof(buf));
-                    if (n > 0) {
-                        std::cout << "Received from fd=" << client_fd << ": " << std::string(buf, n) << std::endl;
-                        // 回显
-                        write(client_fd, buf, n);
-                    } else if (n == 0) {
-                        std::cout << "Client fd=" << client_fd << " disconnected" << std::endl;
-                        close(client_fd);
-                        break;
-                    } else {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // 投递到线程池处理
+                pool.enqueue([client_fd]() {
+                    char buf[4096];
+                    while (true) {
+                        ssize_t n = read(client_fd, buf, sizeof(buf));
+                        if (n > 0) {
+                            std::cout << "[Worker] Received from fd=" << client_fd << ": " << std::string(buf, n) << std::endl;
+                            write(client_fd, buf, n);
+                        } else if (n == 0) {
+                            std::cout << "[Worker] Client fd=" << client_fd << " disconnected" << std::endl;
+                            close(client_fd);
+                            break;
+                        } else {
+                            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                                break;
+                            }
+                            std::cerr << "[Worker] Read error on fd=" << client_fd << std::endl;
+                            close(client_fd);
                             break;
                         }
-                        std::cerr << "Read error on fd=" << client_fd << std::endl;
-                        close(client_fd);
-                        break;
                     }
-                }
+                });
             }
         }
     }
