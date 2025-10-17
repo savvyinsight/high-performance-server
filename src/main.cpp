@@ -11,7 +11,7 @@
 #include <cstring>
 
 
-// 设置非阻塞
+//set non-blocking
 void setNonBlocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
@@ -26,8 +26,8 @@ int main() {
 
     sockaddr_in address;
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(8080);
+    address.sin_addr.s_addr = INADDR_ANY;//Listen on all IPs
+    address.sin_port = htons(8080);//host to network byte order
 
     if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
         std::cerr << "Bind failed\n";
@@ -48,7 +48,7 @@ int main() {
     }
 
     epoll_event ev, events[1024];
-    ev.events = EPOLLIN | EPOLLET; // 读事件 + ET模式
+    ev.events = EPOLLIN | EPOLLET;
     ev.data.fd = server_fd;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_fd, &ev) == -1) {
         std::cerr << "epoll_ctl failed\n";
