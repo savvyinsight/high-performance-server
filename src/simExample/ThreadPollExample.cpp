@@ -33,8 +33,21 @@ public:
         }
     }
     void enqueue(int conn_fd){
-        
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            connections.push(conn_fd);
+        }
+        condition.notify_all();
     }
-    ~ThreadPool(){}
+    ~ThreadPool(){
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            stop = true;
+        }
+        condition.notify_all();
+        for(std::thread& worker:workers){
+            worker.join();
+        }
+    }
 
 };
