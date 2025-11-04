@@ -1,7 +1,3 @@
-#include "../include/ThreadPool.h"
-    // Create a thread pool with 4 worker threads
-    ThreadPool pool(4);
-
 #include <iostream>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -9,6 +5,8 @@
 #include <sys/epoll.h>
 #include <fcntl.h>
 #include <cstring>
+#include <errno.h>
+#include "../include/ThreadPool.h"
 
 
 //set non-blocking
@@ -55,13 +53,16 @@ int main() {
         return -1;
     }
 
+    // Create a thread pool, assuming 4 worker threads (inside main)
+    ThreadPool pool(4);
+
     std::cout << "Server is running on port 8080 (Epoll ET)...\n";
 
     while (true) {
         int nfds = epoll_wait(epoll_fd, events, 1024, -1);
         for (int i = 0; i < nfds; ++i) {
             if (events[i].data.fd == server_fd) {
-                // Handle new connection
+                //process new connection
                 while (true) {
                     int client_fd = accept(server_fd, nullptr, nullptr);
                     if (client_fd == -1) {
@@ -69,15 +70,17 @@ int main() {
                     }
                     setNonBlocking(client_fd);
                     epoll_event client_ev;
-                    client_ev.events = EPOLLIN | EPOLLET;
+                    // 使用 EPOLLONESHOT 确保每次只有一个线程处理该 fd
+                    client_ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
                     client_ev.data.fd = client_fd;
                     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &client_ev);
                     std::cout << "New connection accepted, fd=" << client_fd << std::endl;
                 }
             } else if (events[i].events & EPOLLIN) {
                 int client_fd = events[i].data.fd;
-                // Submit to the thread pool for processing
-                pool.enqueue([client_fd]() {
+                // 投递到线程池处理
+                // capture epoll_fd so worker can re-arm the fd after reading all available data
+                pool.enqueue([epoll_fd, client_fd]() {
                     char buf[4096];
                     while (true) {
                         ssize_t n = read(client_fd, buf, sizeof(buf));
@@ -86,13 +89,25 @@ int main() {
                             write(client_fd, buf, n);
                         } else if (n == 0) {
                             std::cout << "[Worker] Client fd=" << client_fd << " disconnected" << std::endl;
+                            // close fd; since it's closed it's removed from epoll automatically
                             close(client_fd);
                             break;
                         } else {
                             if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                                // 已经读完所有数据（ET + 非阻塞），需要重新激活 EPOLLONESHOT
+                                epoll_event ev_mod;
+                                ev_mod.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+                                ev_mod.data.fd = client_fd;
+                                if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, client_fd, &ev_mod) == -1) {
+                                    // 如果 re-arm 失败，可能是 fd 已被关闭或出错
+                                    std::cerr << "epoll_ctl MOD failed for fd=" << client_fd << ", errno=" << errno << std::endl;
+                                    // 尝试关闭以清理
+                                    close(client_fd);
+                                }
                                 break;
                             }
                             std::cerr << "[Worker] Read error on fd=" << client_fd << std::endl;
+                            // on other errors, close the socket
                             close(client_fd);
                             break;
                         }
