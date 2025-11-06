@@ -6,7 +6,11 @@
 #include <fcntl.h>
 #include <cstring>
 #include <errno.h>
+#include <memory>
+#include <unordered_map>
+#include <mutex>
 #include "../include/ThreadPool.h"
+#include "../include/Connection.h"
 
 
 //set non-blocking
@@ -56,6 +60,12 @@ int main() {
     // Create a thread pool, assuming 4 worker threads (inside main)
     ThreadPool pool(4);
 
+    // per-connection map: fd -> Connection
+    // protected by connections_mutex because both main thread and workers
+    // may insert/erase entries.
+    std::unordered_map<int, std::shared_ptr<Connection>> connections;
+    std::mutex connections_mutex;
+
     std::cout << "Server is running on port 8080 (Epoll ET)...\n";
 
     while (true) {
@@ -74,41 +84,76 @@ int main() {
                     client_ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
                     client_ev.data.fd = client_fd;
                     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &client_ev);
+
+                    // create Connection object and insert into map
+                    {
+                        auto conn = std::make_shared<Connection>(client_fd);
+                        std::lock_guard<std::mutex> lock(connections_mutex);
+                        connections[client_fd] = conn;
+                    }
+
                     std::cout << "New connection accepted, fd=" << client_fd << std::endl;
                 }
             } else if (events[i].events & EPOLLIN) {
                 int client_fd = events[i].data.fd;
-                // 投递到线程池处理
-                // capture epoll_fd so worker can re-arm the fd after reading all available data
-                pool.enqueue([epoll_fd, client_fd]() {
+
+                // lookup the Connection object for this fd
+                std::shared_ptr<Connection> conn;
+                {
+                    std::lock_guard<std::mutex> lock(connections_mutex);
+                    auto it = connections.find(client_fd);
+                    if (it != connections.end()) conn = it->second;
+                }
+
+                if (!conn) {
+                    // Connection not found; it may have been closed concurrently
+                    continue;
+                }
+
+                // enqueue a task that holds a shared_ptr to the Connection
+                // so the Connection object stays alive while the worker runs.
+                pool.enqueue([epoll_fd, client_fd, conn, &connections, &connections_mutex]() {
                     char buf[4096];
                     while (true) {
                         ssize_t n = read(client_fd, buf, sizeof(buf));
                         if (n > 0) {
+                            // update last-active timestamp
+                            conn->touch();
+                            // perform simple echo logic; protect out_buffer if necessary
                             std::cout << "[Worker] Received from fd=" << client_fd << ": " << std::string(buf, n) << std::endl;
-                            write(client_fd, buf, n);
+                            ssize_t w = write(client_fd, buf, n);
+                            (void)w; // ignore short writes for this simple example
                         } else if (n == 0) {
+                            // orderly shutdown by peer
                             std::cout << "[Worker] Client fd=" << client_fd << " disconnected" << std::endl;
-                            // close fd; since it's closed it's removed from epoll automatically
                             close(client_fd);
+                            // remove from connections map
+                            {
+                                std::lock_guard<std::mutex> lock(connections_mutex);
+                                connections.erase(client_fd);
+                            }
                             break;
                         } else {
                             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                                // 已经读完所有数据（ET + 非阻塞），需要重新激活 EPOLLONESHOT
+                                // drained all data for ET + non-blocking; re-arm EPOLLONESHOT
                                 epoll_event ev_mod;
                                 ev_mod.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
                                 ev_mod.data.fd = client_fd;
                                 if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, client_fd, &ev_mod) == -1) {
-                                    // 如果 re-arm 失败，可能是 fd 已被关闭或出错
+                                    // if re-arm fails, clean up: socket may be closed
                                     std::cerr << "epoll_ctl MOD failed for fd=" << client_fd << ", errno=" << errno << std::endl;
-                                    // 尝试关闭以清理
                                     close(client_fd);
+                                    std::lock_guard<std::mutex> lock(connections_mutex);
+                                    connections.erase(client_fd);
                                 }
                                 break;
                             }
                             std::cerr << "[Worker] Read error on fd=" << client_fd << std::endl;
-                            // on other errors, close the socket
                             close(client_fd);
+                            {
+                                std::lock_guard<std::mutex> lock(connections_mutex);
+                                connections.erase(client_fd);
+                            }
                             break;
                         }
                     }

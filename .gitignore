@@ -26,3 +26,6 @@ logs/
 
 # Core dumps
 core
+
+# pid files
+*.pid
