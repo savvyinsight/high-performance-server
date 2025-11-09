@@ -11,6 +11,7 @@
 #include <mutex>
 #include "../include/ThreadPool.h"
 #include "../include/Connection.h"
+#include "../include/Timer.h"
 
 
 //set non-blocking
@@ -65,6 +66,10 @@ int main() {
     // may insert/erase entries.
     std::unordered_map<int, std::shared_ptr<Connection>> connections;
     std::mutex connections_mutex;
+
+    // Timer manager: closes idle connections after timeout seconds
+    TimerManager timer(epoll_fd, connections, connections_mutex, 60); // 60s default
+    timer.start();
 
     std::cout << "Server is running on port 8080 (Epoll ET)...\n";
 
