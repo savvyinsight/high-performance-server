@@ -1,3 +1,10 @@
+// Timer.h
+// Lightweight timer manager using a min-heap to close idle connections.
+// The TimerManager runs a background thread which periodically checks the
+// earliest expiry and closes connections that have been idle longer than
+// the configured timeout. It verifies Connection::last_active to avoid
+// closing connections when heap entries are stale.
+
 #pragma once
 
 #include <chrono>
@@ -6,6 +13,7 @@
 #include <mutex>
 #include <atomic>
 #include <functional>
+#include <vector>
 #include <unordered_map>
 #include <memory>
 

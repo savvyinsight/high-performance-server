@@ -97,6 +97,9 @@ int main() {
                         connections[client_fd] = conn;
                     }
 
+                    // schedule initial timer for this connection
+                    timer.add_or_refresh(client_fd, 60);
+
                     std::cout << "New connection accepted, fd=" << client_fd << std::endl;
                 }
             } else if (events[i].events & EPOLLIN) {
@@ -117,13 +120,15 @@ int main() {
 
                 // enqueue a task that holds a shared_ptr to the Connection
                 // so the Connection object stays alive while the worker runs.
-                pool.enqueue([epoll_fd, client_fd, conn, &connections, &connections_mutex]() {
+                pool.enqueue([epoll_fd, client_fd, conn, &connections, &connections_mutex, &timer]() {
                     char buf[4096];
                     while (true) {
                         ssize_t n = read(client_fd, buf, sizeof(buf));
                         if (n > 0) {
                             // update last-active timestamp
                             conn->touch();
+                            // refresh timer because we received activity
+                            timer.add_or_refresh(client_fd, 60);
                             // perform simple echo logic; protect out_buffer if necessary
                             std::cout << "[Worker] Received from fd=" << client_fd << ": " << std::string(buf, n) << std::endl;
                             ssize_t w = write(client_fd, buf, n);
