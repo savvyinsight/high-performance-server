@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <atomic>
 #include <memory>
+#include <cstdlib>
 #include <unordered_map>
 #include <mutex>
 #include "../include/ThreadPool.h"
@@ -29,7 +30,18 @@ static void handle_signal(int) {
     stop_flag = 1;
 }
 
-int main() {
+int main(int argc, char **argv) {
+    // optional: first argument is number of worker threads
+    int num_threads = 4;
+    if (argc > 1) {
+        // allow `--threads N` or just `N`
+        if (std::string(argv[1]) == "--threads" && argc > 2) {
+            num_threads = std::atoi(argv[2]);
+        } else {
+            num_threads = std::atoi(argv[1]);
+        }
+        if (num_threads <= 0) num_threads = 4;
+    }
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1) {
         Logger::instance().error("Socket creation failed");
@@ -74,8 +86,8 @@ int main() {
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
-    // Create a thread pool, assuming 4 worker threads (inside main)
-    ThreadPool pool(4);
+    // Create a thread pool using configured number of worker threads
+    ThreadPool pool((size_t)num_threads);
 
     // per-connection map: fd -> Connection
     // protected by connections_mutex because both main thread and workers
