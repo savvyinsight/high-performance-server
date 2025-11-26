@@ -6,12 +6,15 @@
 #include <fcntl.h>
 #include <cstring>
 #include <errno.h>
+#include <signal.h>
+#include <atomic>
 #include <memory>
 #include <unordered_map>
 #include <mutex>
 #include "../include/ThreadPool.h"
 #include "../include/Connection.h"
 #include "../include/Timer.h"
+#include "../include/Logger.h"
 
 
 //set non-blocking
@@ -20,10 +23,16 @@ void setNonBlocking(int fd) {
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+static volatile sig_atomic_t stop_flag = 0;
+
+static void handle_signal(int) {
+    stop_flag = 1;
+}
+
 int main() {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1) {
-        std::cerr << "Socket creation failed\n";
+        Logger::instance().error("Socket creation failed");
         return -1;
     }
 
@@ -33,12 +42,12 @@ int main() {
     address.sin_port = htons(8080);//host to network byte order
 
     if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
-        std::cerr << "Bind failed\n";
+        Logger::instance().error("Bind failed");
         return -1;
     }
 
     if (listen(server_fd, 10) < 0) {
-        std::cerr << "Listen failed\n";
+        Logger::instance().error("Listen failed");
         return -1;
     }
 
@@ -46,7 +55,7 @@ int main() {
 
     int epoll_fd = epoll_create1(0);
     if (epoll_fd == -1) {
-        std::cerr << "epoll_create1 failed\n";
+        Logger::instance().error("epoll_create1 failed");
         return -1;
     }
 
@@ -57,6 +66,13 @@ int main() {
         std::cerr << "epoll_ctl failed\n";
         return -1;
     }
+
+    // initialize logger file output (optional)
+    Logger::instance().init("server.log");
+
+    // register simple signal handlers for graceful shutdown
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
 
     // Create a thread pool, assuming 4 worker threads (inside main)
     ThreadPool pool(4);
@@ -71,10 +87,16 @@ int main() {
     TimerManager timer(epoll_fd, connections, connections_mutex, 60); // 60s default
     timer.start();
 
-    std::cout << "Server is running on port 8080 (Epoll ET)...\n";
+    Logger::instance().info("Server is running on port 8080 (Epoll ET)...");
 
-    while (true) {
-        int nfds = epoll_wait(epoll_fd, events, 1024, -1);
+    while (!stop_flag) {
+        // wake periodically to check stop flag
+        int nfds = epoll_wait(epoll_fd, events, 1024, 1000);
+        if (nfds == -1) {
+            if (errno == EINTR) continue;
+            Logger::instance().error(std::string("epoll_wait failed errno=") + std::to_string(errno));
+            break;
+        }
         for (int i = 0; i < nfds; ++i) {
             if (events[i].data.fd == server_fd) {
                 //process new connection
@@ -100,7 +122,7 @@ int main() {
                     // schedule initial timer for this connection
                     timer.add_or_refresh(client_fd, 60);
 
-                    std::cout << "New connection accepted, fd=" << client_fd << std::endl;
+                    Logger::instance().info(std::string("New connection accepted, fd=") + std::to_string(client_fd));
                 }
             } else if (events[i].events & EPOLLIN) {
                 int client_fd = events[i].data.fd;
@@ -130,12 +152,12 @@ int main() {
                             // refresh timer because we received activity
                             timer.add_or_refresh(client_fd, 60);
                             // perform simple echo logic; protect out_buffer if necessary
-                            std::cout << "[Worker] Received from fd=" << client_fd << ": " << std::string(buf, n) << std::endl;
+                            Logger::instance().debug(std::string("[Worker] Received from fd=") + std::to_string(client_fd) + ": " + std::string(buf, n));
                             ssize_t w = write(client_fd, buf, n);
                             (void)w; // ignore short writes for this simple example
                         } else if (n == 0) {
                             // orderly shutdown by peer
-                            std::cout << "[Worker] Client fd=" << client_fd << " disconnected" << std::endl;
+                            Logger::instance().info(std::string("[Worker] Client fd=") + std::to_string(client_fd) + " disconnected");
                             close(client_fd);
                             // remove from connections map
                             {
@@ -151,14 +173,14 @@ int main() {
                                 ev_mod.data.fd = client_fd;
                                 if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, client_fd, &ev_mod) == -1) {
                                     // if re-arm fails, clean up: socket may be closed
-                                    std::cerr << "epoll_ctl MOD failed for fd=" << client_fd << ", errno=" << errno << std::endl;
+                                    Logger::instance().error(std::string("epoll_ctl MOD failed for fd=") + std::to_string(client_fd) + ", errno=" + std::to_string(errno));
                                     close(client_fd);
                                     std::lock_guard<std::mutex> lock(connections_mutex);
                                     connections.erase(client_fd);
                                 }
                                 break;
                             }
-                            std::cerr << "[Worker] Read error on fd=" << client_fd << std::endl;
+                            Logger::instance().error(std::string("[Worker] Read error on fd=") + std::to_string(client_fd));
                             close(client_fd);
                             {
                                 std::lock_guard<std::mutex> lock(connections_mutex);
@@ -170,6 +192,20 @@ int main() {
                 });
             }
         }
+    }
+    // graceful shutdown: stop timer, close connections and fds
+    Logger::instance().info("Shutting down server...");
+    timer.stop();
+
+    {
+        std::lock_guard<std::mutex> lk(connections_mutex);
+        for (auto &p : connections) {
+            int fd = p.first;
+            epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+            close(fd);
+            p.second->closed = true;
+        }
+        connections.clear();
     }
 
     close(server_fd);

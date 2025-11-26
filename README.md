@@ -29,3 +29,26 @@ Technical Points: File I/O, log formatting.
 Objective: Use tools like WebBench to test performance and analyze bottlenecks.
 </div>
 
+## Status and How to run
+
+- **Implemented:** Basic TCP socket server, Epoll (ET), ThreadPool, Timer (min-heap), simple Logger (file + stdout).
+- **To build:**
+
+```sh
+mkdir -p build && cd build
+cmake ..
+make -j
+```
+
+- **Run server:**
+
+```sh
+./high_performance_server
+```
+
+- **Smoke test:**
+
+```sh
+python3 tests/smoke_test.py
+```
+

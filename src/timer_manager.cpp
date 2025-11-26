@@ -3,7 +3,7 @@
 #include "../include/Connection.h"
 #include <unistd.h>
 #include <sys/epoll.h>
-#include <iostream>
+#include "../include/Logger.h"
 
 TimerManager::TimerManager(int epoll_fd,
                            std::unordered_map<int, std::shared_ptr<Connection>> &conns,
@@ -80,7 +80,7 @@ void TimerManager::run_loop() {
                     close(it.fd);
                     itc2->second->closed = true;
                     conns_.erase(itc2);
-                    std::cout << "[Timer] Closed idle fd=" << it.fd << std::endl;
+                    Logger::instance().info(std::string("[Timer] Closed idle fd=") + std::to_string(it.fd));
                 }
             }
         }
