@@ -9,17 +9,27 @@ Each client sends `MSG_PER_CLIENT` messages of size `MSG_SIZE` and measures
 per-message round-trip latency. At the end it prints throughput and
 latency percentiles (p50/p95/p99).
 """
-import socket, threading, time
+import socket, threading, time, argparse
 import statistics
 from collections import deque
 
-HOST = "127.0.0.1"
-PORT = 8080
-NUM_CLIENTS = 200
-MSG_PER_CLIENT = 200
-MSG_SIZE = 256
-CONNECT_TIMEOUT = 2.0
-IO_TIMEOUT = 5.0
+parser = argparse.ArgumentParser(description='Stress test for echo server')
+parser.add_argument('--host', default='127.0.0.1')
+parser.add_argument('--port', type=int, default=8080)
+parser.add_argument('--clients', type=int, default=200)
+parser.add_argument('--msgs', type=int, default=200)
+parser.add_argument('--size', type=int, default=256)
+parser.add_argument('--connect-timeout', type=float, default=2.0)
+parser.add_argument('--io-timeout', type=float, default=5.0)
+args = parser.parse_args()
+
+HOST = args.host
+PORT = args.port
+NUM_CLIENTS = args.clients
+MSG_PER_CLIENT = args.msgs
+MSG_SIZE = args.size
+CONNECT_TIMEOUT = args.connect_timeout
+IO_TIMEOUT = args.io_timeout
 
 latencies = []
 errors = []
