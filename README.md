@@ -57,7 +57,7 @@ Automated experiments
 ./scripts/run_experiments.sh experiments
 ```
 
-The script will:
+The script will build the server, run the stress test with several thread-count configurations, and save the output files into the specified experiments directory.
 
 Note: The wrapper can optionally try to apply some `sysctl` tuning (set `APPLY_SYSCTL=1` inside the script) but that requires `sudo` and will modify system settings.
 
